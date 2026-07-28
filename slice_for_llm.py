@@ -384,12 +384,15 @@ def slice_url(url: str, args: argparse.Namespace) -> int:
     if overlap >= tile_height:
         overlap = max(0, tile_height // 4)
 
+    url, unescaped = normalize_url(url)
     problem = url_problem(url)
     if problem:
         print(f"\n■ {url}\n  {problem}", file=sys.stderr)
         return 2
 
     print(f"\n■ {url}")
+    if unescaped:
+        print("  (주소에 섞여 있던 백슬래시를 제거했습니다)")
     print(
         f"  프리셋 {preset.name} (긴 변 {max_edge}px / 최대 {max_pixels/1_000_000:.2f}MP)"
         f" · 조각 {width}x{tile_height} · 겹침 {overlap}px"
@@ -534,10 +537,10 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "  imgslice 'https://example.com/글'  URL을 직접 캡처해서 자르기\n"
             "\n"
-            "  주소는 반드시 작은따옴표로 감싸고, 백슬래시는 쓰지 마세요.\n"
+            "  주소는 작은따옴표로 감싸세요.\n"
             "    O   imgslice 'https://a.com/p?x=1&y=2'\n"
+            "    O   imgslice 'https://a.com/p\\?x=1\\&y=2'   (백슬래시는 알아서 제거함)\n"
             "    X   imgslice https://a.com/p?x=1&y=2       (셸이 & 에서 잘라먹음)\n"
-            "    X   imgslice 'https://a.com/p\\?x=1\\&y=2'   (백슬래시가 주소에 섞여 들어감)\n"
             "\n"
             "  스크롤하며 화면 단위로 찍으므로 길이 제한도, lazy loading 문제도 없습니다.\n"
             "  모바일(m.) 페이지는 --width 500 처럼 좁게 주면 레이아웃이 자연스럽습니다.\n"
@@ -596,19 +599,18 @@ def is_url(value: str) -> bool:
     return bool(separator) and scheme.isascii() and scheme.isalnum()
 
 
-def url_problem(url: str) -> str | None:
-    """주소를 그대로 쓸 수 있으면 None, 아니면 사용자에게 보여줄 오류 메시지.
+def normalize_url(url: str) -> tuple[str, bool]:
+    """셸 이스케이프로 섞여 들어온 백슬래시를 걷어낸다.
 
-    주소는 '작은따옴표로 감싸기' 한 가지 방법만 지원한다. 백슬래시 이스케이프까지
-    허용하면 이중 이스케이프(따옴표 + 백슬래시)를 구분할 방법이 없어서, 잘못된 주소가
-    조용히 서버로 전달되고 엉뚱한 오류 페이지가 캡처된다.
+    주소에 백슬래시가 정상적으로 들어가는 경우는 없다(RFC 3986). 따옴표로 감싼 주소에
+    백슬래시까지 붙는 실수가 잦으므로 그냥 지우고 진행한다.
     """
-    if "\\" in url:
-        return (
-            "주소에 백슬래시(\\)가 있습니다. 따옴표로 감쌌다면 백슬래시는 쓰지 마세요.\n"
-            "  (둘 다 쓰면 백슬래시가 주소의 일부로 전달되어 엉뚱한 페이지가 열립니다)\n"
-            f"  이렇게 입력하세요:\n    imgslice '{url.replace(chr(92), '')}'"
-        )
+    cleaned = url.strip().replace("\\", "")
+    return cleaned, cleaned != url.strip()
+
+
+def url_problem(url: str) -> str | None:
+    """주소를 쓸 수 있으면 None, 아니면 사용자에게 보여줄 오류 메시지."""
     parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return f"http(s) 주소가 아닙니다: {url}"
