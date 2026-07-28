@@ -1,0 +1,21 @@
+#!/bin/sh
+# 가상환경을 활성화하지 않고 바로 실행하기 위한 래퍼.
+# 심볼릭 링크로 실행돼도 되도록 링크를 끝까지 따라가서 실제 프로젝트 위치를 찾는다.
+self=$0
+while [ -L "$self" ]; do
+	target=$(readlink "$self")
+	case $target in
+	/*) self=$target ;;
+	*) self=$(dirname "$self")/$target ;;
+	esac
+done
+root=$(cd "$(dirname "$self")" && pwd)
+
+venv="$root/.venv/bin/imgslice"
+if [ ! -x "$venv" ]; then
+	echo "가상환경이 없습니다. 아래를 실행하세요:" >&2
+	echo "  cd $root && python3 -m venv .venv && .venv/bin/python -m pip install -e ." >&2
+	exit 1
+fi
+
+exec "$venv" "$@"

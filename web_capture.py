@@ -1,0 +1,248 @@
+"""URL을 브라우저로 열어 스크롤하면서 화면 단위로 캡처한다.
+
+브라우저의 '전체 페이지 스크린샷'은 세로 길이·총 면적에 한계가 있어서 긴 페이지는
+잘리거나 실패한다. 어차피 잘라 쓸 거라면 한 장으로 찍을 이유가 없으므로, 뷰포트를
+조각 크기에 맞춰 놓고 스크롤하며 찍는다. 그러면
+
+  - 길이 제한이 사라지고 (잘림 없음),
+  - 스크롤하는 과정에서 lazy loading 이미지가 전부 로딩되고,
+  - 중간 거대 이미지 없이 바로 최종 조각이 나온다.
+"""
+
+from __future__ import annotations
+
+import io
+import math
+import re
+import time
+from dataclasses import dataclass, field
+
+from PIL import Image
+
+from slice_for_llm import best_blank_row, row_variance
+
+# 페이지 전체 높이 (브라우저마다 값이 달라서 최대값을 쓴다)
+PAGE_HEIGHT_JS = """() => Math.max(
+    document.body ? document.body.scrollHeight : 0,
+    document.body ? document.body.offsetHeight : 0,
+    document.documentElement.scrollHeight,
+    document.documentElement.offsetHeight
+)"""
+
+SCROLL_Y_JS = "() => window.scrollY || document.documentElement.scrollTop || 0"
+
+# lazy loading 을 강제로 풀어준다. 스크롤만으로 안 뜨는 이미지를 위한 안전장치.
+FORCE_LAZY_JS = """() => {
+    for (const img of document.images) {
+        img.loading = 'eager';
+        for (const attr of ['data-src', 'data-lazy-src', 'data-original', 'data-echo']) {
+            const value = img.getAttribute(attr);
+            if (value && !img.src.endsWith(value)) img.src = value;
+        }
+        const srcset = img.getAttribute('data-srcset');
+        if (srcset && !img.srcset) img.srcset = srcset;
+    }
+    return document.images.length;
+}"""
+
+IMAGES_READY_JS = """() => Array.from(document.images)
+    .every(img => img.complete || img.naturalWidth > 0)"""
+
+# 고정/스티키 요소는 모든 조각에 겹쳐 나오므로 캡처 전에 숨긴다.
+HIDE_STICKY_JS = """() => {
+    let hidden = 0;
+    for (const el of document.querySelectorAll('body *')) {
+        const style = getComputedStyle(el);
+        if ((style.position === 'fixed' || style.position === 'sticky')
+            && style.visibility !== 'hidden' && style.display !== 'none') {
+            el.style.setProperty('visibility', 'hidden', 'important');
+            hidden += 1;
+        }
+    }
+    return hidden;
+}"""
+
+
+@dataclass
+class CapturedSlice:
+    image: Image.Image
+    page_top: int  # 페이지 좌표계(CSS 픽셀) 기준 위/아래 위치
+    page_bottom: int
+
+
+@dataclass
+class CaptureResult:
+    url: str
+    title: str
+    page_height: int
+    viewport: tuple[int, int]
+    device_scale_factor: int
+    slices: list[CapturedSlice] = field(default_factory=list)
+
+
+class CaptureError(RuntimeError):
+    pass
+
+
+def slugify(text: str, fallback: str = "capture", limit: int = 60) -> str:
+    """페이지 제목을 파일 이름으로 쓸 수 있게 다듬는다 (한글은 유지)."""
+    text = re.sub(r"\s+", "_", text.strip())
+    text = re.sub(r"[^0-9A-Za-z가-힣._-]", "", text)
+    text = re.sub(r"_{2,}", "_", text).strip("._-")
+    return text[:limit] or fallback
+
+
+def plan_scroll_positions(page_height: int, tile_height: int, overlap: int) -> list[int]:
+    """캡처할 스크롤 위치를 균등하게 배분한다.
+
+    마지막에 몇십 픽셀짜리 자투리 조각이 생기지 않도록, 필요한 조각 수를 먼저 구한 뒤
+    간격을 고르게 나눈다. 실제 겹침은 요청한 값 이상이 된다.
+    """
+    if page_height <= tile_height:
+        return [0]
+    span = page_height - tile_height
+    step = max(1, tile_height - overlap)
+    count = math.ceil(span / step) + 1
+    return [round(i * span / (count - 1)) for i in range(count)]
+
+
+def _require_playwright():
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:  # 로컬 파일만 자를 때는 playwright 가 없어도 된다
+        raise CaptureError(
+            "URL 캡처에는 playwright 가 필요합니다:\n"
+            "  .venv/bin/python -m pip install playwright\n"
+            "  .venv/bin/playwright install chromium"
+        ) from exc
+    return sync_playwright
+
+
+def _scroll_through_page(page, step: int, log) -> int:
+    """끝까지 훑어서 lazy loading 을 유발하고 최종 페이지 높이를 돌려준다."""
+    height = page.evaluate(PAGE_HEIGHT_JS)
+    position = 0
+    for _ in range(500):  # 무한 스크롤 페이지에서 영원히 돌지 않도록
+        position += step
+        page.evaluate("y => window.scrollTo(0, y)", position)
+        page.wait_for_timeout(120)
+        new_height = page.evaluate(PAGE_HEIGHT_JS)
+        if position >= new_height:
+            if new_height <= height:
+                height = new_height
+                break
+        height = new_height
+    else:
+        log("  주의: 페이지가 계속 길어져서 스크롤을 중간에 멈췄습니다 (무한 스크롤?)")
+    return height
+
+
+def _wait_for_images(page, timeout_ms: int) -> None:
+    page.evaluate(FORCE_LAZY_JS)
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        if page.evaluate(IMAGES_READY_JS):
+            return
+        page.wait_for_timeout(200)
+
+
+def capture_slices(
+    url: str,
+    *,
+    width: int,
+    tile_height: int,
+    overlap: int,
+    scale: int = 2,
+    smart_window: int = 80,
+    smart_cut: bool = True,
+    engine: str = "chromium",
+    headless: bool = True,
+    extra_wait: float = 0.0,
+    timeout: float = 60.0,
+    log=print,
+) -> CaptureResult:
+    sync_playwright = _require_playwright()
+    timeout_ms = int(timeout * 1000)
+
+    with sync_playwright() as pw:
+        launcher = getattr(pw, engine, None)
+        if launcher is None:
+            raise CaptureError(f"알 수 없는 엔진입니다: {engine}")
+        try:
+            browser = launcher.launch(headless=headless)
+        except Exception as exc:
+            raise CaptureError(
+                f"{engine} 브라우저를 실행하지 못했습니다. 설치가 필요할 수 있습니다:\n"
+                f"  .venv/bin/playwright install {engine}\n원본 오류: {exc}"
+            ) from exc
+
+        try:
+            context = browser.new_context(
+                viewport={"width": width, "height": tile_height},
+                device_scale_factor=scale,
+            )
+            page = context.new_page()
+            page.set_default_timeout(timeout_ms)
+
+            log(f"  페이지 여는 중: {url}")
+            page.goto(url, wait_until="load", timeout=timeout_ms)
+
+            log("  끝까지 스크롤해서 이미지 로딩 중...")
+            page_height = _scroll_through_page(page, int(tile_height * 0.8), log)
+            _wait_for_images(page, timeout_ms)
+            try:
+                page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass  # 광고·트래커가 계속 붙는 페이지에서는 networkidle 이 안 온다
+            if extra_wait:
+                page.wait_for_timeout(int(extra_wait * 1000))
+
+            hidden = page.evaluate(HIDE_STICKY_JS)
+            if hidden:
+                log(f"  고정/스티키 요소 {hidden}개 숨김 (조각마다 겹쳐 나오는 것 방지)")
+
+            page.evaluate("() => window.scrollTo(0, 0)")
+            page.wait_for_timeout(300)
+            page_height = page.evaluate(PAGE_HEIGHT_JS)
+            title = page.title() or ""
+            log(f"  페이지 높이 {page_height:,}px · 뷰포트 {width}x{tile_height} @{scale}x")
+
+            result = CaptureResult(
+                url=url,
+                title=title,
+                page_height=page_height,
+                viewport=(width, tile_height),
+                device_scale_factor=scale,
+            )
+
+            positions = plan_scroll_positions(page_height, tile_height, overlap)
+            log(f"  조각 {len(positions)}개 캡처 중...")
+
+            for i, requested in enumerate(positions):
+                page.evaluate("y => window.scrollTo(0, y)", requested)
+                page.wait_for_timeout(150)
+                actual = page.evaluate(SCROLL_Y_JS)
+
+                shot = Image.open(io.BytesIO(page.screenshot(animations="disabled"))).convert("RGB")
+                if shot.size != (width, tile_height):
+                    shot = shot.resize((width, tile_height), Image.LANCZOS)
+
+                # 페이지가 뷰포트보다 짧으면 아래쪽 빈 공간을 잘라낸다.
+                bottom = min(tile_height, max(1, page_height - actual))
+
+                if smart_cut and i + 1 < len(positions):
+                    # 다음 조각 시작점보다 위로는 자를 수 없고(빈 구간 방지),
+                    # 문맥이 이어지도록 요청 겹침의 절반은 남긴다.
+                    floor = max(
+                        tile_height - smart_window,
+                        positions[i + 1] - actual + overlap // 2,
+                    )
+                    bottom = best_blank_row(row_variance(shot), bottom, floor)
+
+                if bottom < tile_height:
+                    shot = shot.crop((0, 0, width, bottom))
+                result.slices.append(CapturedSlice(shot, actual, actual + shot.height))
+
+            return result
+        finally:
+            browser.close()

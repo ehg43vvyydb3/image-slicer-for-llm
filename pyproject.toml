@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image-slicer-for-llm"
+version = "0.1.0"
+description = "세로로 긴 스크린샷을 LLM이 축소 없이 읽을 수 있는 크기로 잘라주는 CLI"
+requires-python = ">=3.10"
+dependencies = ["Pillow>=10.0"]
+
+# URL 캡처 기능에만 필요하다. 로컬 이미지를 자를 때는 없어도 된다.
+[project.optional-dependencies]
+web = ["playwright>=1.40"]
+
+[project.scripts]
+imgslice = "slice_for_llm:main"
+
+[tool.setuptools]
+py-modules = ["slice_for_llm", "web_capture"]
