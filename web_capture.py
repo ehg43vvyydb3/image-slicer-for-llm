@@ -73,6 +73,7 @@ class CapturedSlice:
 @dataclass
 class CaptureResult:
     url: str
+    final_url: str
     title: str
     page_height: int
     viewport: tuple[int, int]
@@ -185,7 +186,15 @@ def capture_slices(
             page.set_default_timeout(timeout_ms)
 
             log(f"  페이지 여는 중: {url}")
-            page.goto(url, wait_until="load", timeout=timeout_ms)
+            response = page.goto(url, wait_until="load", timeout=timeout_ms)
+
+            status = response.status if response else None
+            if status and status >= 400:
+                log(f"  주의: 서버가 HTTP {status} 를 반환했습니다.")
+            # 오류 페이지로 리다이렉트되는 경우가 많다 (주소 오타, 로그인 요구 등).
+            # 상태 코드는 200 이어도 주소가 바뀌므로 이쪽이 더 확실한 신호다.
+            if page.url != url:
+                log(f"  이동됨 → {page.url}")
 
             log("  끝까지 스크롤해서 이미지 로딩 중...")
             page_height = _scroll_through_page(page, int(tile_height * 0.8), log)
@@ -209,6 +218,7 @@ def capture_slices(
 
             result = CaptureResult(
                 url=url,
+                final_url=page.url,
                 title=title,
                 page_height=page_height,
                 viewport=(width, tile_height),

@@ -16,6 +16,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PIL import Image, ImageOps
 
@@ -383,6 +384,11 @@ def slice_url(url: str, args: argparse.Namespace) -> int:
     if overlap >= tile_height:
         overlap = max(0, tile_height // 4)
 
+    problem = url_problem(url)
+    if problem:
+        print(f"\n■ {url}\n  {problem}", file=sys.stderr)
+        return 2
+
     print(f"\n■ {url}")
     print(
         f"  프리셋 {preset.name} (긴 변 {max_edge}px / 최대 {max_pixels/1_000_000:.2f}MP)"
@@ -414,6 +420,9 @@ def slice_url(url: str, args: argparse.Namespace) -> int:
 
     stem = web_capture.slugify(result.title, fallback="capture")
     print(f"  제목: {result.title or '(없음)'}")
+    if len(result.slices) == 1:
+        print("  참고: 페이지가 한 화면에 다 들어갔습니다. "
+              "주소가 맞는지, 로그인이 필요한 페이지는 아닌지 확인해 보세요.")
     print(f"  조각 {len(result.slices)}개 · 조각당 최대 약 "
           f"{max(preset.tokens(s.image.width, s.image.height) for s in result.slices):,} 토큰")
 
@@ -433,6 +442,7 @@ def slice_url(url: str, args: argparse.Namespace) -> int:
             {
                 "source": {
                     "url": result.url,
+                    "final_url": result.final_url,
                     "title": result.title,
                     "page_height": result.page_height,
                     "viewport": list(result.viewport),
@@ -523,9 +533,14 @@ def build_parser() -> argparse.ArgumentParser:
             "  imgslice page.png --dry-run       자르는 위치만 미리 확인\n"
             "\n"
             "  imgslice 'https://example.com/글'  URL을 직접 캡처해서 자르기\n"
-            "    · 주소에 & 가 들어가면 반드시 따옴표로 감싸세요 (zsh)\n"
-            "    · 스크롤하며 화면 단위로 찍으므로 길이 제한도, lazy loading 문제도 없습니다\n"
-            "    · 모바일(m.) 페이지는 --width 500 처럼 좁게 주면 레이아웃이 자연스럽습니다\n"
+            "\n"
+            "  주소는 반드시 작은따옴표로 감싸고, 백슬래시는 쓰지 마세요.\n"
+            "    O   imgslice 'https://a.com/p?x=1&y=2'\n"
+            "    X   imgslice https://a.com/p?x=1&y=2       (셸이 & 에서 잘라먹음)\n"
+            "    X   imgslice 'https://a.com/p\\?x=1\\&y=2'   (백슬래시가 주소에 섞여 들어감)\n"
+            "\n"
+            "  스크롤하며 화면 단위로 찍으므로 길이 제한도, lazy loading 문제도 없습니다.\n"
+            "  모바일(m.) 페이지는 --width 500 처럼 좁게 주면 레이아웃이 자연스럽습니다.\n"
         ),
     )
     parser.add_argument(
@@ -576,7 +591,28 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def is_url(value: str) -> bool:
-    return value.startswith(("http://", "https://"))
+    """`스킴://` 형태면 주소로 본다. http(s) 여부는 url_problem 에서 걸러낸다."""
+    scheme, separator, _ = value.partition("://")
+    return bool(separator) and scheme.isascii() and scheme.isalnum()
+
+
+def url_problem(url: str) -> str | None:
+    """주소를 그대로 쓸 수 있으면 None, 아니면 사용자에게 보여줄 오류 메시지.
+
+    주소는 '작은따옴표로 감싸기' 한 가지 방법만 지원한다. 백슬래시 이스케이프까지
+    허용하면 이중 이스케이프(따옴표 + 백슬래시)를 구분할 방법이 없어서, 잘못된 주소가
+    조용히 서버로 전달되고 엉뚱한 오류 페이지가 캡처된다.
+    """
+    if "\\" in url:
+        return (
+            "주소에 백슬래시(\\)가 있습니다. 따옴표로 감쌌다면 백슬래시는 쓰지 마세요.\n"
+            "  (둘 다 쓰면 백슬래시가 주소의 일부로 전달되어 엉뚱한 페이지가 열립니다)\n"
+            f"  이렇게 입력하세요:\n    imgslice '{url.replace(chr(92), '')}'"
+        )
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return f"http(s) 주소가 아닙니다: {url}"
+    return None
 
 
 def print_presets() -> None:
