@@ -27,6 +27,13 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".ti
 
 EXTENSIONS = {"png": ".png", "jpeg": ".jpg", "webp": ".webp"}
 
+# 출력 폴더는 소스 위치와 무관하게 항상 다운로드 폴더 밑에 만든다.
+DOWNLOADS_DIR = Path.home() / "Downloads"
+
+
+def default_outdir(stem: str) -> Path:
+    return DOWNLOADS_DIR / f"{stem}_output"
+
 
 def claude_tokens(width: int, height: int) -> int:
     """Claude 비전 토큰 근사치: 가로 x 세로 / 750."""
@@ -338,7 +345,7 @@ def slice_image(path: Path, args: argparse.Namespace) -> int:
                   f"  ({tile.width}x{tile.height})")
         return 0
 
-    outdir = args.outdir or path.parent / f"{path.stem}_output"
+    outdir = args.outdir or default_outdir(path.stem)
     if not prepare_outdir(outdir, path.stem, args.force):
         return 1
 
@@ -412,6 +419,7 @@ def slice_url(url: str, args: argparse.Namespace) -> int:
             headless=not args.show,
             extra_wait=args.wait,
             timeout=args.timeout,
+            click_texts=args.click,
         )
     except web_capture.CaptureError as exc:
         print(f"  캡처 실패: {exc}", file=sys.stderr)
@@ -429,7 +437,7 @@ def slice_url(url: str, args: argparse.Namespace) -> int:
     print(f"  조각 {len(result.slices)}개 · 조각당 최대 약 "
           f"{max(preset.tokens(s.image.width, s.image.height) for s in result.slices):,} 토큰")
 
-    outdir = args.outdir or Path.cwd() / f"{stem}_output"
+    outdir = args.outdir or default_outdir(stem)
     if not prepare_outdir(outdir, stem, args.force):
         return 1
 
@@ -451,6 +459,7 @@ def slice_url(url: str, args: argparse.Namespace) -> int:
                     "viewport": list(result.viewport),
                     "device_scale_factor": result.device_scale_factor,
                     "engine": args.engine,
+                    "click": args.click or [],
                 },
                 "preset": {"name": preset.name, "max_edge": max_edge, "max_pixels": max_pixels},
                 "tile": {"width": width, "height": tile_height, "overlap": overlap},
@@ -536,6 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  imgslice page.png --dry-run       자르는 위치만 미리 확인\n"
             "\n"
             "  imgslice 'https://example.com/글'  URL을 직접 캡처해서 자르기\n"
+            "  imgslice 'https://a.com/p' --click 더보기   캡처 전에 '더보기' 버튼을 모두 클릭\n"
             "\n"
             "  주소는 작은따옴표로 감싸세요.\n"
             "    O   imgslice 'https://a.com/p?x=1&y=2'\n"
@@ -588,6 +598,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="캡처에 쓸 브라우저 엔진 (기본: chromium)",
     )
     web.add_argument("--show", action="store_true", help="브라우저 창을 띄워서 진행 과정 보기")
+    web.add_argument(
+        "--click", action="append", metavar="텍스트",
+        help="캡처 전 지정한 텍스트를 가진 요소를 모두 클릭 (예: --click 더보기). 여러 번 지정 가능",
+    )
     web.add_argument("--wait", type=float, default=0.0, help="캡처 전 추가 대기 초 (기본: 0)")
     web.add_argument("--timeout", type=float, default=60.0, help="페이지 로딩 제한 초 (기본: 60)")
     return parser
