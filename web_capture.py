@@ -260,10 +260,13 @@ def capture_slices(
     extra_wait: float = 0.0,
     timeout: float = 60.0,
     click_texts: list[str] | None = None,
+    pause: bool = False,
     log=print,
 ) -> CaptureResult:
     sync_playwright = _require_playwright()
     timeout_ms = int(timeout * 1000)
+    if pause and headless:
+        raise CaptureError("pause 는 브라우저 창이 보여야 쓸 수 있습니다 (headless=False 필요)")
 
     with sync_playwright() as pw:
         launcher = getattr(pw, engine, None)
@@ -318,6 +321,15 @@ def capture_slices(
                 log("  펼치기 버튼 클릭 중...")
                 _click_expand_texts(page, click_texts, log)
                 # 클릭으로 새 내용이 펼쳐졌을 수 있으니 다시 끝까지 스크롤해서 로딩시킨다.
+                page_height = _scroll_through_page(page, int(tile_height * 0.8), log)
+                _wait_for_images(page, timeout_ms)
+
+            if pause:
+                # 봇 탐지로 자동 클릭이 막히는 페이지(알리익스프레스 등)를 위한
+                # 사람 개입 지점. 더보기 클릭·로그인·캡차를 직접 처리하게 한다.
+                log("  브라우저 창에서 필요한 조작(더보기 클릭, 로그인 등)을 직접 하세요.")
+                input("  준비되면 엔터를 누르세요 (캡처를 시작합니다)... ")
+                # 사람이 펼친 내용까지 마저 로딩시킨다.
                 page_height = _scroll_through_page(page, int(tile_height * 0.8), log)
                 _wait_for_images(page, timeout_ms)
 

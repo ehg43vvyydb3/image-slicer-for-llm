@@ -416,10 +416,11 @@ def slice_url(url: str, args: argparse.Namespace) -> int:
             smart_window=args.smart_window,
             smart_cut=args.smart_cut,
             engine=args.engine,
-            headless=not args.show,
+            headless=not (args.show or args.pause),
             extra_wait=args.wait,
             timeout=args.timeout,
             click_texts=args.click,
+            pause=args.pause,
         )
     except web_capture.CaptureError as exc:
         print(f"  캡처 실패: {exc}", file=sys.stderr)
@@ -546,6 +547,8 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "  imgslice 'https://example.com/글'  URL을 직접 캡처해서 자르기\n"
             "  imgslice 'https://a.com/p' --click 더보기   캡처 전에 '더보기' 버튼을 모두 클릭\n"
+            "  imgslice 'https://a.com/p' --pause          창을 띄워 직접 클릭/로그인 후 엔터로 캡처\n"
+            "                                              (자동 클릭이 봇 탐지에 막히는 사이트용)\n"
             "\n"
             "  주소는 작은따옴표로 감싸세요.\n"
             "    O   imgslice 'https://a.com/p?x=1&y=2'\n"
@@ -601,6 +604,10 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument(
         "--click", action="append", metavar="텍스트",
         help="캡처 전 지정한 텍스트를 가진 요소를 모두 클릭 (예: --click 더보기). 여러 번 지정 가능",
+    )
+    web.add_argument(
+        "--pause", action="store_true",
+        help="브라우저 창을 띄우고 캡처 전에 멈춰서, 더보기 클릭·로그인 등을 직접 할 시간을 줌 (엔터로 계속)",
     )
     web.add_argument("--wait", type=float, default=0.0, help="캡처 전 추가 대기 초 (기본: 0)")
     web.add_argument("--timeout", type=float, default=60.0, help="페이지 로딩 제한 초 (기본: 60)")
