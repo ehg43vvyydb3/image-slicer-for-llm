@@ -250,30 +250,18 @@ def human_size(num_bytes: int) -> str:
 
 
 def pick_image_interactively() -> Path | None:
-    candidates = sorted(
-        p for p in Path.cwd().iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES
-    )
-    if not candidates:
-        print(f"현재 폴더({Path.cwd()})에 이미지 파일이 없습니다.", file=sys.stderr)
-        return None
-
-    print("자를 이미지를 고르세요:")
-    for i, path in enumerate(candidates, start=1):
-        with Image.open(path) as image:
-            size = f"{image.width}x{image.height}"
-        print(f"  {i:2d}. {path.name}  ({size})")
-
+    """macOS Finder 파일 선택창을 띄운다. 경로를 손으로 타이핑/붙여넣기 하지 않아도 되니
+    한글·공백이 섞인 파일명에서 셸 이스케이프 실수가 날 여지가 없다."""
+    types = ", ".join(f'"{ext.lstrip(".")}"' for ext in sorted(IMAGE_SUFFIXES))
+    script = f'POSIX path of (choose file with prompt "자를 이미지를 고르세요" of type {{{types}}})'
     try:
-        answer = input("번호 (엔터=취소): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    except FileNotFoundError:
+        print("파일 선택창을 열 수 없습니다 (macOS 전용 기능입니다).", file=sys.stderr)
         return None
-    if not answer:
-        return None
-    if not answer.isdigit() or not 1 <= int(answer) <= len(candidates):
-        print("잘못된 번호입니다.", file=sys.stderr)
-        return None
-    return candidates[int(answer) - 1]
+    if result.returncode != 0:
+        return None  # 사용자가 취소함
+    return Path(result.stdout.strip())
 
 
 def clear_previous_output(outdir: Path, stem: str) -> int:
@@ -539,7 +527,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "예시:\n"
-            "  imgslice                          현재 폴더의 이미지를 골라서 자르기\n"
+            "  imgslice                          파일 선택창에서 이미지를 골라서 자르기\n"
             "  imgslice page.png                 page_output/ 에 조각 저장\n"
             "  imgslice *.png --force            여러 장 한 번에, 기존 결과 덮어쓰기\n"
             "  imgslice page.png -p claude-hires 고해상도 모델용 (조각 수 감소)\n"

@@ -81,7 +81,7 @@ imgslice https://a.com/p?x=1&y=2        # X — zsh가 & 에서 명령을 잘라
 ### 로컬 이미지에서
 
 ```bash
-imgslice                          # 현재 폴더의 이미지 목록에서 골라서
+imgslice                          # 파일 선택창(Finder)에서 이미지를 골라서
 imgslice page.png                 # ~/Downloads/page_output/ 에 page_01.png, page_02.png ...
 imgslice *.png --force            # 여러 장 한 번에, 기존 결과 덮어쓰기
 imgslice page.png --dry-run       # 파일을 만들지 않고 자르는 위치만 확인
