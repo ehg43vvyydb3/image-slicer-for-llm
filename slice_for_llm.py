@@ -527,7 +527,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "예시:\n"
-            "  imgslice                          파일 선택창에서 이미지를 골라서 자르기\n"
+            "  imgslice --file                   파일 선택창에서 이미지를 골라서 자르기\n"
             "  imgslice page.png                 page_output/ 에 조각 저장\n"
             "  imgslice *.png --force            여러 장 한 번에, 기존 결과 덮어쓰기\n"
             "  imgslice page.png -p claude-hires 고해상도 모델용 (조각 수 감소)\n"
@@ -549,7 +549,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "images", nargs="*", metavar="이미지|URL",
-        help="자를 이미지 경로 또는 http(s) 주소 (생략하면 목록에서 선택)",
+        help="자를 이미지 경로 또는 http(s) 주소",
+    )
+    parser.add_argument(
+        "--file", action="store_true",
+        help="파일 선택창(Finder)에서 이미지를 골라 자르기 (경로/URL 인자 대신 사용)",
     )
     parser.add_argument(
         "-p", "--preset", choices=sorted(PRESETS), default="claude",
@@ -646,17 +650,21 @@ def main(argv: list[str] | None = None) -> int:
         print_presets()
         return 0
 
+    if args.file and args.images:
+        print("--file 은 이미지/URL 인자 없이 단독으로 씁니다.", file=sys.stderr)
+        return 2
+
     targets: list[str | Path] = [
         arg if is_url(arg) else Path(arg) for arg in args.images
     ]
-    if not targets:
-        if not sys.stdin.isatty():
-            print("이미지 경로나 URL을 지정하세요.", file=sys.stderr)
-            return 2
+    if args.file:
         picked = pick_image_interactively()
         if picked is None:
             return 1
         targets = [picked]
+    elif not targets:
+        print("이미지 경로나 URL을 지정하세요 (또는 --file 로 선택창을 여세요).", file=sys.stderr)
+        return 2
 
     if args.outdir and len(targets) > 1:
         print("--outdir 는 대상이 하나일 때만 쓸 수 있습니다.", file=sys.stderr)
